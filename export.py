@@ -11,7 +11,7 @@ import md5
 from datetime import datetime
 from threading import Thread
 
-DEBUG = True
+DEBUG = False
 VERBOSE = True
 
 #-----------------------------------------------------------------------------
@@ -23,18 +23,20 @@ versions_url = u'http://userscripts.org:8080/scripts/versions/{id}?page={page}'
 download_url = u'http://userscripts.org:8080/scripts/source/{id}.user.js'
 version_download_url = u'http://userscripts.org:8080/scripts/version/{id_pai}/'
 
-def _get_scripts_from_page(scripts, page):
+def _get_scripts_from_page(page):
+    scripts = {}
     url = list_url.format(page = page)
     response = requests.get(url)
     if response.status_code == 200:
         soup = BeautifulSoup(response.content)
         scripts_from_page = soup.findAll(u'tr', attrs={u'id': re.compile(u'scripts')})
+        scripts_from_page = scripts_from_page[:2] if DEBUG else scripts_from_page #DEBUG limit
         total_scripts_from_page = len(scripts_from_page)
         for i, script_row in enumerate(scripts_from_page):
-            #print(u'{i} of {total} scripts in page {page}'.format(i=i+1, total=total_scripts_from_page, page = page))
+            print(u'{i} of {total} scripts in page {page}'.format(i=i+1, total=total_scripts_from_page, page = page))
             _id = re.sub(r'\D',u'',script_row.attrs[u'id'])
             if VERBOSE:
-                #print('Getting script id ' + str(_id))
+                print('Getting script id ' + str(_id))
                 pass
             a = script_row.find('a', attrs={'class':'title'})
             #link = a.attrs[u'href']
@@ -56,9 +58,8 @@ def _get_scripts_from_page(scripts, page):
                 _hash = md5.md5(json.dumps(script))
                 _hash = _hash.hexdigest()
                 script.update({u'hash_with_versions':_hash})
-                scripts.update({_id: script})
-            #if i >= 1 and DEBUG: #DEBUG limit
-            #    break
+            scripts.update({_id: script})
+    _download_all_scripts(scripts)
     return scripts
 
 def _get_script_details(id):
@@ -71,7 +72,7 @@ def _get_script_details(id):
 
 def _get_script_versions(id):
     _all_versions = []
-    pages = 100 if DEBUG else 100 #DEBUG limit
+    pages = 1 if DEBUG else 100 #DEBUG limit
     for page in xrange(1, pages):
         if VERBOSE:
             #print('Getting versions from page ' + str(page))
@@ -138,7 +139,7 @@ def _download_script(script):
     with open(_description_file, 'w') as _file:
         _text = u'# {id} - {title}'.format(
             id = script[u'id'],
-            title = script[u'title'])
+            title = script[u'title'].encode(u'ascii', 'replace'))
         _file.write(_text)
     _userscript_file = os.path.join(_paths[1], script[u'id'] + '.user.js')
     if not os.path.exists(_userscript_file):
@@ -153,12 +154,13 @@ def _download_script(script):
             with open(_version_file, 'w') as _file:
                 _file.write(requests.get(remote_file_version).content)
 
-def _download_all_scripts(script_list):
-    total_scripts = len(script_list)
-    for i, script in enumerate(script_list):
-        print(script)
+def _download_all_scripts(script_dict):
+    total_scripts = len(script_dict)
+    for i, _id in enumerate(script_dict):
+        script = script_dict[str(_id)]
         print(u'{i} of {total} scripts'.format(i=i+1, total=total_scripts))
         _download_script(script)
+        script_dict[_id][u'downloaded'] = True
 
 def _save(script_dict):
     script_dict.update({u'date':datetime.now().strftime(u'%Y-%m-%d_%H-%M-%S')})
@@ -177,24 +179,24 @@ def threaded():
     from threading import Thread, Lock
 
     def job():
-        global _all
-        args = q.get()
-        l = Lock()
-        l.acquire()
-        _all = _get_scripts_from_page(*args)
-        _download_all_scripts(_all)
-        l.release()
-        _save(_all)
-        #print(u'DONE '*30)
-        q.task_done()
+        while True:
+            global _all
+            args = q.get()
+            l = Lock()
+            l.acquire()
+            _all = _get_scripts_from_page(args)
+            l.release()
+            _save(_all)
+            #print(u'DONE '*30)
+            q.task_done()
 
 
     q = Queue()
-    _pages = 10 if DEBUG else _get_pages() #DEBUG limit
+    _pages = 3 if DEBUG else _get_pages() #DEBUG limit
     for x in xrange(1, _pages):
-        q.put((_all, x))
+        q.put(x)
 
-    _threads = 10 if DEBUG else 10 #DEBUG limit
+    _threads = 2 if DEBUG else 10 #DEBUG limit
     for x in xrange(1, _threads):
         th=Thread(target=job)
         th.daemon = True
@@ -207,6 +209,7 @@ def not_threaded():
     _pages = 2 if DEBUG else _get_pages() #DEBUG limit
     for x in xrange(1, _pages):
         _all = _get_scripts_from_page(_all, x)
+        _download_all_scripts(_all)
 
 
 _ini = datetime.now()
